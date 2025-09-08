@@ -74,6 +74,17 @@ export class PayID19WebhookService {
     if (!orderInfo) {
       console.log(`⚠️ Не найдена информация о заказе: ${payload.order_id}`);
       this.logger.warn(`Order info not found for ${payload.order_id}`);
+      
+      // Пытаемся извлечь userId из order_id
+      const orderIdParts = (payload.order_id || '').split('_');
+      if (orderIdParts.length >= 2) {
+        const extractedUserId = parseInt(orderIdParts[1]);
+        if (!isNaN(extractedUserId)) {
+          console.log(`⚠️ Восстановлен userId из order_id: ${extractedUserId}`);
+          this.logger.warn(`Recovered userId from order_id: ${extractedUserId}`);
+          // Но всё равно возвращаемся, так как нам нужна полная информация о заказе
+        }
+      }
       return;
     }
 

@@ -180,12 +180,29 @@ export class TransactionLoggerService {
         const fs = require('fs');
         const data = fs.readFileSync(this.transactionsFile, 'utf8');
         if (data.trim()) {
-          transactions = JSON.parse(data);
+          try {
+            transactions = JSON.parse(data);
+            // Валидация массива транзакций
+            if (!Array.isArray(transactions)) {
+              this.logger.warn('Invalid transactions format, resetting to empty array');
+              transactions = [];
+            }
+          } catch (parseError) {
+            this.logger.error('Failed to parse existing transactions JSON, creating backup:', parseError);
+            // Создаём резервную копию повреждённого файла
+            const backupFile = `${this.transactionsFile}.backup-${Date.now()}`;
+            fs.copyFileSync(this.transactionsFile, backupFile);
+            this.logger.log(`Backup created at: ${backupFile}`);
+            transactions = [];
+          }
         }
       }
 
+      // Нормализуем данные транзакции (убираем undefined значения)
+      const cleanTransaction = JSON.parse(JSON.stringify(transaction));
+      
       // Добавляем новую транзакцию
-      transactions.push(transaction);
+      transactions.push(cleanTransaction);
 
       // Ограничиваем количество транзакций в файле (последние 1000)
       if (transactions.length > 1000) {

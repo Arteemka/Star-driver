@@ -101,11 +101,21 @@ export class BotService {
     let session: SessionData;
     switch (data) {
       case CallbackData.BUY:
+        // Проверяем наличие username перед покупкой
+        const hasBuyUsername = await this.checkAndRequireUsername(userId, 'покупки звёзд');
+        if (!hasBuyUsername) {
+          return; // Пользователю отправлено сообщение о необходимости установить username
+        }
         session = { flow: 'buy', step: 1 };
         this.session.set(userId, session);
         await this.askCount(userId);
         return;
       case CallbackData.GIFT:
+        // Проверяем наличие username перед отправкой подарка
+        const hasGiftUsername = await this.checkAndRequireUsername(userId, 'отправки подарка');
+        if (!hasGiftUsername) {
+          return; // Пользователю отправлено сообщение о необходимости установить username
+        }
         session = { flow: 'gift', step: 1 };
         this.session.set(userId, session);
         await this.askUsername(userId);
@@ -760,6 +770,65 @@ export class BotService {
       this.logger.log(`Support message sent to chat ${chatId}`);
     } catch (error) {
       this.logger.error(`Failed to send support message to chat ${chatId}:`, error);
+    }
+  }
+
+  /**
+   * Проверяет наличие username у пользователя и требует его установки, если он отсутствует
+   * @param userId ID пользователя
+   * @param action Действие, для которого требуется username
+   * @returns true если username есть, false если нет
+   */
+  private async checkAndRequireUsername(userId: number, action: string): Promise<boolean> {
+    try {
+      const userInfo = await this.getUserInfo(userId);
+      
+      // Проверяем наличие username
+      if (!userInfo?.username) {
+        // Отправляем сообщение с инструкцией по установке username
+        const message = `❗ **Требуется имя пользователя**\n\n` +
+          `Для ${action} необходимо установить имя пользователя в Telegram.\n\n` +
+          `📝 **Как установить имя пользователя:**\n` +
+          `1. Откройте настройки Telegram\n` +
+          `2. Нажмите «Изменить профиль» или «Edit Profile»\n` +
+          `3. В поле «Имя пользователя» введите уникальное имя\n` +
+          `4. Сохраните изменения\n\n` +
+          `✅ После установки имени пользователя нажмите /start и попробуйте снова.\n\n` +
+          `❓ Если нужна помощь, обратитесь в поддержку.`;
+        
+        await this.tg.sendMessage(userId, message, {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{
+                text: '💬 Поддержка',
+                url: 'https://t.me/Purple13s'
+              }],
+              [{
+                text: '🔄 Проверить еще раз',
+                callback_data: CallbackData.BUY // Или GIFT в зависимости от action
+              }]
+            ]
+          }
+        });
+        
+        this.logger.log(`User ${userId} requires username for ${action}`);
+        return false;
+      }
+      
+      this.logger.log(`User ${userId} has username: @${userInfo.username}`);
+      return true;
+    } catch (error) {
+      this.logger.error(`Failed to check username for user ${userId}:`, error);
+      
+      // В случае ошибки отправляем общее сообщение
+      await this.tg.sendMessage(
+        userId,
+        '❗ Произошла ошибка при проверке профиля. Пожалуйста, убедитесь, что у вас установлено имя пользователя и попробуйте снова.',
+        { reply_markup: this.mainKeyboard.reply_markup }
+      );
+      
+      return false;
     }
   }
 
