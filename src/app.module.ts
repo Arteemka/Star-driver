@@ -17,6 +17,7 @@ import { KassaSignatureService } from './payments/kassa-signature.service';
 
 import { RootWebhookController } from './root-webhook.controller';
 import { TransactionLoggerService } from './common/services/transaction-logger.service';
+import { UserStorageService } from './common/services/user-storage.service';
 import { TransactionStatsController } from './common/controllers/transaction-stats.controller';
 
 @Module({
@@ -35,6 +36,9 @@ import { TransactionStatsController } from './common/controllers/transaction-sta
         WATA_API_URL: Joi.string().uri(),
         PAYID19_PUBLIC_KEY: Joi.string().required(),
         PAYID19_PRIVATE_KEY: Joi.string().required(),
+        
+        ADMIN_ID: Joi.string().required(),
+        ADMIN_USERNAME: Joi.string().required(),
        
         BANNER_URL: Joi.string().uri().required(),
         WEBHOOK_BASE_URL: Joi.string().uri().optional(),
@@ -54,7 +58,8 @@ import { TransactionStatsController } from './common/controllers/transaction-sta
     KassaService,
     KassaWebhookService,
     KassaSignatureService,
-    TransactionLoggerService
+    TransactionLoggerService,
+    UserStorageService
   ],
 })
 export class AppModule {}

@@ -1,11 +1,14 @@
 import { Injectable } from '@nestjs/common';
-import { writeFile, appendFile, existsSync, mkdirSync } from 'fs';
+import { writeFile, appendFile, existsSync, mkdirSync, readdir, stat, rename } from 'fs';
 import { promisify } from 'util';
 import { join } from 'path';
 import { AppLogger } from '../../utils/logger';
 
 const writeFileAsync = promisify(writeFile);
 const appendFileAsync = promisify(appendFile);
+const readdirAsync = promisify(readdir);
+const statAsync = promisify(stat);
+const renameAsync = promisify(rename);
 
 export interface TransactionLog {
   timestamp: string;
@@ -38,9 +41,10 @@ export class TransactionLoggerService {
   private readonly logger = AppLogger;
   private readonly logsDir = join(process.cwd(), 'logs');
   private readonly transactionsFile = join(this.logsDir, 'transactions.json');
-  private readonly dailyLogFile = join(this.logsDir, `transactions-${new Date().toISOString().split('T')[0]}.log`);
-
   private readonly botLogFile = join(process.cwd(), 'bot.log');
+  
+  // Храним транзакции в памяти для быстрого доступа
+  private memoryTransactions: TransactionLog[] = [];
   
   constructor() {
     this.ensureLogsDirectory();
@@ -64,7 +68,7 @@ export class TransactionLoggerService {
       // Обогащаем данные транзакции
       const enrichedTransaction = {
         ...transaction,
-        timestamp: new Date().toISOString(),
+        timestamp: transaction.timestamp || new Date().toISOString(),
         loggedAt: new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' }),
       };
 
@@ -80,7 +84,10 @@ export class TransactionLoggerService {
       // 4. Добавляем в общий bot.log
       await this.appendToBotLog(enrichedTransaction);
 
-      this.logger.log(`Transaction logged: ${transaction.transactionId}`);
+      // 5. Архивируем старые логи (если нужно)
+      await this.archiveOldLogs();
+
+      this.logger.log(`Transaction logged: ${transaction.transactionId} to ${this.getDailyLogFileName()}`);
     } catch (error) {
       this.logger.error('Failed to log transaction:', error);
     }
@@ -203,10 +210,18 @@ export class TransactionLoggerService {
       
       // Добавляем новую транзакцию
       transactions.push(cleanTransaction);
+      
+      // Добавляем также в память для быстрого доступа
+      this.memoryTransactions.push(cleanTransaction);
 
       // Ограничиваем количество транзакций в файле (последние 1000)
       if (transactions.length > 1000) {
         transactions = transactions.slice(-1000);
+      }
+      
+      // Ограничиваем количество транзакций в памяти (последние 500)
+      if (this.memoryTransactions.length > 500) {
+        this.memoryTransactions = this.memoryTransactions.slice(-500);
       }
 
       // Сохраняем в файл
@@ -217,12 +232,34 @@ export class TransactionLoggerService {
   }
 
   /**
+   * Получает имя файла для текущего дневного лога
+   */
+  private getDailyLogFileName(): string {
+    const date = new Date();
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return join(this.logsDir, `transactions-${year}-${month}-${day}.log`);
+  }
+
+  /**
    * Добавляет запись в дневной текстовый лог
    */
   private async appendToDailyLog(transaction: TransactionLog): Promise<void> {
     try {
+      const dailyLogFile = this.getDailyLogFileName();
       const logLine = this.formatLogLine(transaction);
-      await appendFileAsync(this.dailyLogFile, logLine + '\n', 'utf8');
+      
+      // Добавляем заголовок, если файл только создается
+      if (!existsSync(dailyLogFile)) {
+        const header = `=== Transaction Log for ${new Date().toISOString().split('T')[0]} ===\n` +
+                      `=== Created at ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} ===\n` +
+                      '='.repeat(80) + '\n\n';
+        await appendFileAsync(dailyLogFile, header, 'utf8');
+      }
+      
+      await appendFileAsync(dailyLogFile, logLine + '\n', 'utf8');
+      this.logger.log(`Transaction logged to: ${dailyLogFile}`);
     } catch (error) {
       this.logger.error('Failed to append to daily log:', error);
     }
@@ -232,11 +269,24 @@ export class TransactionLoggerService {
    * Форматирует строку для текстового лога
    */
   private formatLogLine(transaction: TransactionLog): string {
+    // Форматируем время в читаемом виде
+    const formattedTime = new Date(transaction.timestamp).toLocaleString('ru-RU', {
+      timeZone: 'Europe/Moscow',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+    
+    const statusIcon = this.getStatusIcon(transaction.status);
+    
     const parts = [
-      transaction.timestamp,
-      transaction.status,
-      transaction.transactionId,
-      transaction.orderId,
+      `[${formattedTime}]`,
+      `${statusIcon} ${transaction.status}`,
+      `TxID:${transaction.transactionId}`,
+      `OrderID:${transaction.orderId}`,
       `${transaction.amount} ${transaction.currency}`,
       transaction.paymentMethod,
     ];
@@ -547,5 +597,170 @@ export class TransactionLoggerService {
       operationType: 'WEBHOOK',
       timestamp: new Date().toISOString(),
     });
+  }
+
+  /**
+   * Архивирует старые логи (старше 30 дней)
+   */
+  private async archiveOldLogs(): Promise<void> {
+    try {
+      const archiveDir = join(this.logsDir, 'archive');
+      
+      // Создаем папку archive если её нет
+      if (!existsSync(archiveDir)) {
+        mkdirSync(archiveDir, { recursive: true });
+      }
+
+      // Получаем список файлов в папке logs
+      const files = await readdirAsync(this.logsDir);
+      const now = new Date();
+      const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+      for (const file of files) {
+        // Пропускаем папку archive и файл transactions.json
+        if (file === 'archive' || file === 'transactions.json') {
+          continue;
+        }
+
+        // Проверяем только .log файлы
+        if (!file.endsWith('.log')) {
+          continue;
+        }
+
+        const filePath = join(this.logsDir, file);
+        const fileStat = await statAsync(filePath);
+        
+        // Если файл старше 30 дней, перемещаем в архив
+        if (fileStat.mtime < thirtyDaysAgo) {
+          const archivePath = join(archiveDir, file);
+          await renameAsync(filePath, archivePath);
+          this.logger.log(`Archived old log file: ${file}`);
+        }
+      }
+    } catch (error) {
+      // Не прерываем основной процесс логирования из-за ошибки архивации
+      this.logger.warn('Failed to archive old logs:', error);
+    }
+  }
+
+  /**
+   * Получает список всех лог-файлов с датами
+   */
+  async getLogFiles(): Promise<Array<{ name: string; date: Date; size: number }>> {
+    try {
+      const files = await readdirAsync(this.logsDir);
+      const logFiles = [];
+
+      for (const file of files) {
+        if (file.endsWith('.log')) {
+          const filePath = join(this.logsDir, file);
+          const fileStat = await statAsync(filePath);
+          logFiles.push({
+            name: file,
+            date: fileStat.mtime,
+            size: fileStat.size
+          });
+        }
+      }
+
+      // Сортируем по дате (новые первые)
+      logFiles.sort((a, b) => b.date.getTime() - a.date.getTime());
+      return logFiles;
+    } catch (error) {
+      this.logger.error('Failed to get log files:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Очищает старые транзакции из JSON файла (оставляет последние 5000)
+   */
+  async cleanupTransactionsJson(): Promise<void> {
+    try {
+      if (!existsSync(this.transactionsFile)) {
+        return;
+      }
+
+      const fs = require('fs');
+      const data = fs.readFileSync(this.transactionsFile, 'utf8');
+      if (!data.trim()) {
+        return;
+      }
+
+      let transactions: TransactionLog[] = JSON.parse(data);
+      
+      if (transactions.length > 5000) {
+        // Оставляем последние 5000 транзакций
+        transactions = transactions.slice(-5000);
+        await writeFileAsync(this.transactionsFile, JSON.stringify(transactions, null, 2), 'utf8');
+        this.logger.log(`Cleaned up transactions.json, kept last 5000 records`);
+      }
+    } catch (error) {
+      this.logger.error('Failed to cleanup transactions.json:', error);
+    }
+  }
+
+  /**
+   * Очищает первую половину транзакций из памяти
+   * Вызывается каждые 12 часов для освобождения памяти
+   */
+  async clearOldTransactionsFromMemory(): Promise<number> {
+    try {
+      const initialCount = this.memoryTransactions.length;
+      
+      if (initialCount === 0) {
+        this.logger.log('No transactions in memory to clear');
+        return 0;
+      }
+      
+      // Определяем сколько транзакций оставить
+      // Оставляем последние 50% транзакций (но не менее 100)
+      const keepCount = Math.max(100, Math.floor(initialCount / 2));
+      
+      if (initialCount > keepCount) {
+        // Удаляем первую половину транзакций
+        const toRemove = initialCount - keepCount;
+        this.memoryTransactions = this.memoryTransactions.slice(toRemove);
+        
+        this.logger.log(`🗑️ Cleared ${toRemove} old transactions from memory`);
+        this.logger.log(`📊 Remaining transactions in memory: ${this.memoryTransactions.length}`);
+        
+        // Также обновляем файл, оставляя только последние транзакции
+        if (existsSync(this.transactionsFile)) {
+          try {
+            const fs = require('fs');
+            const data = fs.readFileSync(this.transactionsFile, 'utf8');
+            if (data.trim()) {
+              let fileTransactions: TransactionLog[] = JSON.parse(data);
+              
+              // Оставляем в файле последние 500 транзакций
+              if (fileTransactions.length > 500) {
+                fileTransactions = fileTransactions.slice(-500);
+                await writeFileAsync(this.transactionsFile, JSON.stringify(fileTransactions, null, 2), 'utf8');
+                this.logger.log(`📁 Also cleaned file transactions, kept last 500 records`);
+              }
+            }
+          } catch (error) {
+            this.logger.warn('Failed to cleanup file transactions:', error);
+          }
+        }
+        
+        return toRemove;
+      }
+      
+      this.logger.log(`Memory transactions count (${initialCount}) is below threshold, no cleanup needed`);
+      return 0;
+      
+    } catch (error) {
+      this.logger.error('Failed to clear old transactions from memory:', error);
+      return 0;
+    }
+  }
+
+  /**
+   * Возвращает количество транзакций в памяти
+   */
+  getMemoryTransactionsCount(): number {
+    return this.memoryTransactions.length;
   }
 }

@@ -2,7 +2,7 @@
 export const MIN_STARS = 100;
 
 /** Цена одной звезды в рублях */
-export const STAR_PRICE_RUB = 1.45;
+export const STAR_PRICE_RUB = 1.5;
 
 /** Цена одной звезды в USD для криптоплатежей */
 export const STAR_PRICE_USD = 0.0180;

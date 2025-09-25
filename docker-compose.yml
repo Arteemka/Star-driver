@@ -15,9 +15,9 @@ services:
     env_file:
       - .env
     volumes:
-      - ./:/app # чтобы видеть правки на лету
+      - ./:/app 
     ports:
-      - '3000:3000'
+      - '3001:3001'
     depends_on:
       - postgres
 

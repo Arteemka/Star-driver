@@ -4,10 +4,21 @@ import { AppModule } from './app.module';
 import { AppLogger } from './utils/logger';
 import { ConfigService } from '@nestjs/config';
 import { BotService } from './bot/bot.service';
+import { AdminService } from './bot/admin.service';
 import { Telegraf, Context } from 'telegraf';
 import { CallbackData } from './common/constants/payment.constants';
 import * as bodyParser from 'body-parser';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import { AdminScene } from './bot/admin.scene';
+import { session } from 'telegraf';
+import { Scenes } from 'telegraf';
+
+// Define custom context with session and scene support
+interface BotContext extends Context {
+  session: Scenes.SceneSession;
+  scene: Scenes.SceneContextScene<BotContext>;
+}
+
 
 async function bootstrap(): Promise<void> {
   // Создаем полноценное NestJS приложение с HTTP сервером для webhook'ов
@@ -45,7 +56,7 @@ async function bootstrap(): Promise<void> {
   app.enableCors();
 
   // Запускаем HTTP сервер на порту 3000 для webhook'ов
-  const port = process.env.PORT || 3000;
+  const port = process.env.PORT || 3001;
   await app.listen(port);
   AppLogger.log(`🌐 HTTP server started on port ${port} for webhooks`);
 
@@ -55,9 +66,18 @@ async function bootstrap(): Promise<void> {
   // Клавиатура теперь управляется через BotService
   const config = app.get(ConfigService);
   const botService = app.get(BotService);
+  const adminService = app.get(AdminService);
 
   const token = config.getOrThrow<string>('TELEGRAM_TOKEN');
-  const bot = new Telegraf<Context>(token);
+  const bot = new Telegraf<BotContext>(token);
+  
+  // Получаем AdminScene из контейнера DI (уже с внедренными зависимостями)
+  const adminScene = app.get(AdminScene);
+  const stage = new Scenes.Stage<BotContext>([adminScene as any]);
+  
+  // Подключаем session и stage middleware
+  bot.use(session());
+  bot.use(stage.middleware());
 
   // Устанавливаем боковое меню (Menu Button)
   await bot.telegram.setChatMenuButton({
@@ -116,9 +136,87 @@ async function bootstrap(): Promise<void> {
     return botService.handleCallback('', CallbackData.SUPPORT, ctx.chat.id);
   });
 
-  // Обработка всех остальных текстовых сообщений
+  // Админские команды - запуск админ-сцены
+  bot.command('admin', async (ctx) => {
+    const userId = ctx.from.id;
+    const username = ctx.from.username;
+    
+    if (!adminService.isAdmin(userId, username)) {
+      await ctx.reply('❌ У вас нет доступа к админ-панели');
+      return;
+    }
+    
+    // Запускаем админ-сцену
+    await (ctx as any).scene.enter('admin');
+  });
+
+  // Команда для быстрого запуска рассылки (тоже через админ-сцену)
+  bot.command('broadcast', async (ctx) => {
+    const userId = ctx.from.id;
+    const username = ctx.from.username;
+    
+    if (!adminService.isAdmin(userId, username)) {
+      await ctx.reply('❌ У вас нет доступа к рассылке');
+      return;
+    }
+    
+    // Запускаем админ-сцену
+    await (ctx as any).scene.enter('admin');
+  });
+
+  // Команда /cancel теперь обрабатывается в AdminScene
+
+  bot.command('users', async (ctx) => {
+    const userId = ctx.from.id;
+    const username = ctx.from.username;
+    
+    if (!adminService.isAdmin(userId, username)) {
+      await ctx.reply('❌ У вас нет доступа к этой команде');
+      return;
+    }
+    
+    const usersData = await adminService.getUsersData();
+    if (usersData.users.length === 0) {
+      await ctx.reply('📭 Список пользователей пуст');
+      return;
+    }
+    
+    // Сортируем по дате (самые новые сверху)
+    const sortedUsers = [...usersData.users].sort((a, b) => 
+      new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    );
+    
+    // Берём последние 20 пользователей
+    const recentUsers = sortedUsers.slice(0, 20);
+    
+    let message = '👥 *Последние 20 пользователей:*\n\n';
+    
+    recentUsers.forEach((user, index) => {
+      const date = new Date(user.timestamp).toLocaleString('ru-RU', {
+        day: '2-digit',
+        month: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+      
+      const giftEmoji = user.isGift ? '🎁' : '⭐';
+      const giftInfo = user.isGift && user.giftRecipient ? ` → @${user.giftRecipient}` : '';
+      
+      message += `${index + 1}. @${user.username} (${user.starCount} ${giftEmoji}${giftInfo})\n`;
+      message += `   _${date}_\n\n`;
+    });
+    
+    if (usersData.users.length > 20) {
+      message += `\n_...и ещё ${usersData.users.length - 20} пользователей_`;
+    }
+    
+    await ctx.replyWithMarkdown(message);
+  });
+
+  // Обработка фото теперь в AdminScene
+
   // Обработка всех текстовых сообщений
-  bot.on('text', (ctx) => {
+  bot.on('text', async (ctx) => {
     const text = ctx.message.text;
 
     // если нажали «⭐ Купить Звёзды» на Reply-клавиатуре

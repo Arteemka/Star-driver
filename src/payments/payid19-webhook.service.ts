@@ -101,40 +101,22 @@ export class PayID19WebhookService {
     }
 
     try {
-      // Пытаемся извлечь username из description webhook'а
-      let recipientUsername: string | null = null;
+      // Определяем получателя звёзд напрямую из данных заказа
+      let recipientUsername: string;
       
-      if (payload.description) {
-        const match = payload.description.match(/recipient:([^\s|]+)/);
-        if (match) {
-          recipientUsername = match[1];
-          console.log(`🎯 Username извлечён из webhook: @${recipientUsername}`);
+      if (orderInfo.isGift && orderInfo.giftUsername) {
+        // Подарок - используем username получателя из заказа
+        recipientUsername = orderInfo.giftUsername;
+        console.log(`🎁 Подарок для: @${recipientUsername}`);
+      } else {
+        // Покупка для себя - получаем username покупателя
+        const username = await this.getUsernameById(orderInfo.userId);
+        if (!username) {
+          console.log(`❌ Не удалось получить username для пользователя ${orderInfo.userId}`);
+          throw new Error(`Не удалось получить username для пользователя ${orderInfo.userId}`);
         }
-      }
-      
-      // Если не удалось извлечь, пытаемся получить из сохранённых данных заказа
-      if (!recipientUsername) {
-        console.log('⚠️ Не удалось извлечь username из webhook, используем данные заказа...');
-        
-        if (orderInfo.isGift && orderInfo.giftUsername) {
-          // Подарок - покупаем для получателя
-          recipientUsername = orderInfo.giftUsername;
-        } else {
-          // Покупка для себя - пытаемся получить username покупателя
-          const username = await this.getUsernameById(orderInfo.userId);
-          if (!username) {
-            console.log(`⚠️ Не удалось получить username для пользователя ${orderInfo.userId}, используем fallback`);
-            recipientUsername = `user_${orderInfo.userId}`;
-          } else {
-            recipientUsername = username;
-            console.log(`👤 Username получен: @${recipientUsername}`);
-          }
-        }
-      }
-      
-      if (!recipientUsername) {
-        console.log(`❌ Не удалось определить username получателя`);
-        throw new Error('Не удалось определить username получателя');
+        recipientUsername = username;
+        console.log(`👤 Покупка для себя: @${recipientUsername}`);
       }
 
       console.log(`🚀 Покупаем ${orderInfo.count} звёзд для @${recipientUsername} через Fragment API...`);

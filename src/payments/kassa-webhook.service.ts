@@ -130,21 +130,22 @@ export class KassaWebhookService {
     }
 
     try {
-      // Определяем, кому покупать звёзды
+      // Определяем получателя звёзд напрямую из данных заказа
       let recipientUsername: string;
       
       if (orderInfo.isGift && orderInfo.giftUsername) {
-        // Подарок - покупаем для получателя
+        // Подарок - используем username получателя из заказа
         recipientUsername = orderInfo.giftUsername;
+        console.log(`🎁 Подарок для: @${recipientUsername}`);
       } else {
-        // Покупка для себя - пытаемся получить username покупателя
-        recipientUsername = (await this.getUsernameById(orderInfo.userId)) || `user_${orderInfo.userId}`;
-        if (!recipientUsername) {
-          console.log(`⚠️ Не удалось получить username для пользователя ${orderInfo.userId}, используем fallback`);
-          recipientUsername = `user_${orderInfo.userId}`;
-        } else {
-          console.log(`👤 Username получен: @${recipientUsername}`);
+        // Покупка для себя - получаем username покупателя
+        const username = await this.getUsernameById(orderInfo.userId);
+        if (!username) {
+          console.log(`❌ Не удалось получить username для пользователя ${orderInfo.userId}`);
+          throw new Error(`Не удалось получить username для пользователя ${orderInfo.userId}`);
         }
+        recipientUsername = username;
+        console.log(`👤 Покупка для себя: @${recipientUsername}`);
       }
 
       console.log(`🚀 Покупаем ${orderInfo.count} звёзд для @${recipientUsername} через Fragment API...`);

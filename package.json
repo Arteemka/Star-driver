@@ -25,6 +25,7 @@
     "@nestjs/config": "^4.0.2",
     "@nestjs/core": "^11.0.1",
     "@nestjs/platform-express": "^11.0.1",
+    "@nestjs/schedule": "^6.0.0",
     "@tonclient/core": "^1.30.0",
     "@tonclient/lib-node": "^1.30.0",
     "@types/qrcode": "^1.5.5",

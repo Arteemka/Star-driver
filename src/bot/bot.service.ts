@@ -12,6 +12,7 @@ import { PayID19Service } from '../payments/payid19.service';
 import { FragmentService } from '../payments/fragment.service';
 import { KassaService } from '../payments/kassa.service';
 import { TransactionLoggerService } from '../common/services/transaction-logger.service';
+import { UserStorageService } from '../common/services/user-storage.service';
 import { Markup } from 'telegraf';
 import { AppLogger } from '../utils/logger';
 
@@ -54,6 +55,7 @@ export class BotService {
     private readonly kassaService: KassaService,
     private readonly fragmentService: FragmentService,
     private readonly transactionLogger: TransactionLoggerService,
+    private readonly userStorageService: UserStorageService,
   ) {
     const token = this.config.getOrThrow<string>('TELEGRAM_TOKEN');
     this.tg = new Telegram(token);
@@ -284,11 +286,64 @@ export class BotService {
 
       // Определяем username получателя для PayID19
       let recipientUsername: string;
+      let userInfo: any = null;
+      
       if (isGift && giftUsername) {
         recipientUsername = giftUsername;
+        // Получаем информацию о дарителе
+        userInfo = await this.getUserInfo(chatId);
       } else {
-        const userInfo = await this.getUserInfo(chatId);
-        recipientUsername = userInfo?.username || `user_${chatId}`;
+        userInfo = await this.getUserInfo(chatId);
+        if (!userInfo?.username) {
+          throw new Error(`Не удалось получить username для пользователя ${chatId}. Пожалуйста, установите username в настройках Telegram`);
+        }
+        recipientUsername = userInfo.username;
+      }
+
+      // Сохраняем пользователя при создании заказа (исключая администратора)
+      try {
+        const adminId = this.config.get<string>('ADMIN_ID');
+        const isAdmin = chatId.toString() === adminId;
+        
+        if (userInfo?.username && !isAdmin) {
+          // Для покупки себе - сохраняем как обычную покупку
+          if (!isGift) {
+            await this.userStorageService.addOrUpdateUser(
+              chatId,
+              userInfo.username,
+              count,
+              false,
+              userInfo.first_name,
+              userInfo.last_name
+            );
+            this.logger.log(`User @${userInfo.username} saved on order creation (self purchase)`);
+          }
+          // Для подарка - сохраняем дарителя как отправителя подарка
+          else {
+            await this.userStorageService.addOrUpdateUser(
+              chatId,
+              userInfo.username,
+              count,
+              true, // isGift = true для отправителя подарка
+              userInfo.first_name,
+              userInfo.last_name
+            );
+            this.logger.log(`Gift sender @${userInfo.username} saved on order creation`);
+            
+            // Также обновляем получателя подарка если он есть в базе
+            // Проверяем, что получатель не администратор
+            const adminUsername = this.config.get<string>('ADMIN_USERNAME');
+            if (giftUsername && giftUsername !== adminUsername) {
+              await this.userStorageService.updateGiftRecipient(giftUsername);
+              this.logger.log(`Gift recipient @${giftUsername} marked for update`);
+            }
+          }
+        } else if (isAdmin) {
+          this.logger.log(`Skipping save for admin user @${userInfo?.username || chatId}`);
+        }
+      } catch (saveError) {
+        this.logger.error('Failed to save user on order creation:', saveError);
+        // Не прерываем процесс создания заказа при ошибке сохранения
       }
 
       // Создаем ссылки на оплату
@@ -363,10 +418,15 @@ export class BotService {
         });
 
         // Формируем сообщение с деталями заказа
-        const orderDetails = `📋 **Детали заказа:**\n` +
+        let orderDetails = `📋 **Детали заказа:**\n` +
           `• Заказ: \`${orderId}\`\n` +
-          `• Звёзд: **${count}**\n` +
-          `${isGift ? `• Получатель: **@${giftUsername}**\n` : ''}\n` +
+          `• Звёзд: **${count}**\n`;
+        
+        if (isGift && giftUsername) {
+          orderDetails += `• Получатель: **${this.escapeMarkdown(giftUsername)}**\n`;
+        }
+        
+        orderDetails += '\n' +
           '⏰ **Срок оплаты: 30 минут**\n\n' +
           '⏳ Нажмите на одну из кнопок выше для перехода к оплате\n' +
           'После успешной оплаты звёзды будут автоматически начислены\n' +
@@ -613,6 +673,32 @@ export class BotService {
   }
 
   /**
+   * Очищает старые заказы из памяти
+   * Удаляет заказы старше 24 часов
+   */
+  static clearOldOrders(): number {
+    const now = Date.now();
+    const twentyFourHoursAgo = now - (24 * 60 * 60 * 1000);
+    let removedCount = 0;
+    
+    // Проходим по всем заказам и удаляем старые
+    for (const [orderId, orderInfo] of BotService.orders.entries()) {
+      const orderTime = new Date(orderInfo.timestamp).getTime();
+      
+      if (orderTime < twentyFourHoursAgo) {
+        BotService.orders.delete(orderId);
+        removedCount++;
+      }
+    }
+    
+    if (removedCount > 0) {
+      AppLogger.log(`🗑️ Cleared ${removedCount} old orders from memory`);
+    }
+    
+    return removedCount;
+  }
+
+  /**
    * Получает информацию о пользователе Telegram
    */
   async getUserInfo(userId: number): Promise<{ username?: string; first_name?: string; last_name?: string } | null> {
@@ -771,6 +857,16 @@ export class BotService {
     } catch (error) {
       this.logger.error(`Failed to send support message to chat ${chatId}:`, error);
     }
+  }
+
+  /**
+   * Экранирует специальные символы для Markdown
+   * @param text Текст для экранирования
+   * @returns Экранированный текст
+   */
+  private escapeMarkdown(text: string): string {
+    // Экранируем специальные символы Markdown
+    return text.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
   }
 
   /**
