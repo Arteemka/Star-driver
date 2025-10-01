@@ -26,31 +26,31 @@ async function bootstrap(): Promise<void> {
     logger: AppLogger,
   });
   // Middleware для обработки raw body для WATA webhook'ов
-  app.use((req: any, res: any, next: any) => {
-    if (req.originalUrl && req.originalUrl.includes('/webhooks/wata')) {
-      bodyParser.text({ type: '*/*', limit: '50mb' })(req, res, (err) => {
-        if (err) {
-          return next(err);
-        }
+  // app.use((req: any, res: any, next: any) => {
+  //   if (req.originalUrl && req.originalUrl.includes('/webhooks/wata')) {
+  //     bodyParser.text({ type: '*/*', limit: '50mb' })(req, res, (err) => {
+  //       if (err) {
+  //         return next(err);
+  //       }
 
-        // Сохраняем raw body в свойстве запроса для проверки подписи
-        (req as any).rawBody = req.body;
+  //       // Сохраняем raw body в свойстве запроса для проверки подписи
+  //       (req as any).rawBody = req.body;
 
-        // Парсим JSON для дальнейшей обработки
-        try {
-          if (typeof req.body === 'string') {
-            req.body = JSON.parse(req.body);
-          }
-        } catch (parseError) {
-          AppLogger.warn('Failed to parse JSON for WATA webhook', parseError);
-        }
+  //       // Парсим JSON для дальнейшей обработки
+  //       try {
+  //         if (typeof req.body === 'string') {
+  //           req.body = JSON.parse(req.body);
+  //         }
+  //       } catch (parseError) {
+  //         AppLogger.warn('Failed to parse JSON for WATA webhook', parseError);
+  //       }
 
-        next();
-      });
-    } else {
-      next();
-    }
-  });
+  //       next();
+  //     });
+  //   } else {
+  //     next();
+  //   }
+  // });
 
   // Включаем CORS для webhook'ов
   app.enableCors();

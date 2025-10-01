@@ -3,6 +3,8 @@ import { KassaWebhookPayload } from './kassa-webhook.controller';
 import { BotService } from '../bot/bot.service';
 import { FragmentService } from './fragment.service';
 import { TransactionLoggerService } from '../common/services/transaction-logger.service';
+import { RetryQueueService } from './retry-queue.service';
+import { FailureReason } from './retry-queue.interface';
 
 @Injectable()
 export class KassaWebhookService {
@@ -18,6 +20,7 @@ export class KassaWebhookService {
     private readonly fragmentService: FragmentService,
     private readonly botService: BotService,
     private readonly transactionLogger: TransactionLoggerService,
+    private readonly retryQueueService: RetryQueueService,
   ) {}
 
   /**
@@ -194,15 +197,51 @@ export class KassaWebhookService {
       BotService.removeOrderInfo(payload.order_id);
       
     } catch (error) {
-      console.log(`❌ Ошибка при покупке звёзд через Fragment API:`, error);
+      console.log(`❗ Ошибка при покупке звёзд через Fragment API:`, error);
       this.logger.error(`Failed to buy stars for order ${payload.order_id}:`, error);
       
-      // Отправляем уведомление пользователю об ошибке
-      await this.botService.notifyStarsPurchaseError(
+      // Определяем тип ошибки
+      const errorMessage = (error as Error)?.message || 'Неизвестная ошибка';
+      
+      this.logger.log(`🔎 Analyzing error type for order ${payload.order_id}: ${errorMessage}`);
+      
+      // Классифицируем ошибку для определения стратегии
+      const failureReason = this.classifyFailureReason(errorMessage);
+      
+      // Специальная обработка для USER_NOT_FOUND - не добавляем в очередь
+      if (failureReason === FailureReason.FRAGMENT_USER_NOT_FOUND) {
+        this.logger.warn(`🚫 Processing USER_NOT_FOUND error for order ${payload.order_id}, user: @${recipientUsername}`);
+        await this.handleUserNotFoundError(orderInfo, recipientUsername);
+        return; // НЕ добавляем в очередь повторных попыток
+      }
+      
+      // ✅ ДОБАВЛЯЕМ ЗАКАЗ В ОЧЕРЕДЬ ПОВТОРНЫХ ПОПЫТОК
+      this.logger.log(`➕ Добавляем заказ ${payload.order_id} в очередь повторных попыток`);
+      
+      await this.retryQueueService.addFailedOrder(
+        payload.order_id,
+        orderInfo.userId,
         orderInfo.chatId,
+        recipientUsername,
         orderInfo.count,
         orderInfo.isGift,
-        (error as Error)?.message || 'Неизвестная ошибка'
+        failureReason,
+        errorMessage,
+        'P2PKassa',
+        payload.amount,
+        payload.currency,
+        payload.id
+      );
+      
+      // Отправляем пользователю уведомление о том, что будет повторная попытка
+      await this.botService['tg'].sendMessage(
+        orderInfo.chatId,
+        `⏳ **Временная ошибка при обработке заказа**\n\n` +
+        `Платёж успешно получен, но возникла проблема с Fragment API.\n\n` +
+        `🔄 **Мы автоматически повторим попытку через 2 минуты.**\n` +
+        `Всего будет сделано до 10 попыток.\n\n` +
+        `Вы получите уведомление, когда звёзды будут начислены.`,
+        { parse_mode: 'Markdown' }
       );
     }
   }
@@ -263,5 +302,81 @@ export class KassaWebhookService {
     if (expiredKeys.length > 0) {
       this.logger.log(`Cleaned up ${expiredKeys.length} expired webhook records`);
     }
+  }
+
+  /**
+   * Обрабатывает ошибку "user not found"
+   */
+  private async handleUserNotFoundError(
+    orderInfo: any,
+    recipientUsername: string
+  ): Promise<void> {
+    this.logger.log(`🚫 Starting USER_NOT_FOUND error handling for user @${recipientUsername}, order: ${orderInfo.orderId || 'N/A'}, chat: ${orderInfo.chatId}`);
+    
+    const message = `❌ **Пользователь не найден в Fragment**\n\n` +
+      `Пользователь @${recipientUsername} не найден на платформе Fragment.\n\n` +
+      `🔗 **Что нужно сделать:**\n` +
+      `1. Перейдите на Fragment: https://fragment.com\n` +
+      `2. Зарегистрируйтесь или войдите в аккаунт\n` +
+      `3. Обратитесь в поддержку для возврата средств\n\n` +
+      `💰 Платёж обработан, но звёзды не могут быть начислены.\n` +
+      `Мы поможем вам с возвратом.`;
+
+    this.logger.log(`📨 Sending USER_NOT_FOUND notification to chat ${orderInfo.chatId} for user @${recipientUsername}`);
+
+    try {
+      await this.botService['tg'].sendMessage(orderInfo.chatId, message, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{
+              text: '🌐 Перейти на Fragment',
+              url: 'https://fragment.com'
+            }],
+            [{
+              text: '💬 Обратиться в поддержку',
+              url: 'https://t.me/Purple13s'
+            }]
+          ]
+        }
+      });
+      
+      this.logger.log(`✅ USER_NOT_FOUND error notification sent successfully to chat ${orderInfo.chatId}`);
+    } catch (error) {
+      this.logger.error(`❌ Failed to send USER_NOT_FOUND notification to chat ${orderInfo.chatId}:`, error);
+    }
+  }
+
+  /**
+   * Классифицирует ошибку для определения причины и стратегии повтора
+   */
+  private classifyFailureReason(errorMessage: string): FailureReason {
+    const lowerError = errorMessage.toLowerCase();
+    
+    if (lowerError.includes('ssl') || lowerError.includes('tlsv1') || lowerError.includes('tlsv1_alert_internal_error')) {
+      return FailureReason.FRAGMENT_SSL_ERROR;
+    }
+    
+    if (lowerError.includes('timeout') || lowerError.includes('таймаут') || lowerError.includes('524')) {
+      return FailureReason.FRAGMENT_TIMEOUT;
+    }
+    
+    if (lowerError.includes('not found') || lowerError.includes('не найден')) {
+      return FailureReason.FRAGMENT_USER_NOT_FOUND;
+    }
+    
+    if (lowerError.includes('insufficient') || lowerError.includes('недостаточно')) {
+      return FailureReason.FRAGMENT_INSUFFICIENT_BALANCE;
+    }
+    
+    if (lowerError.includes('rate limit') || lowerError.includes('429')) {
+      return FailureReason.FRAGMENT_RATE_LIMIT;
+    }
+    
+    if (lowerError.includes('econnrefused') || lowerError.includes('enotfound') || lowerError.includes('unavailable')) {
+      return FailureReason.FRAGMENT_UNAVAILABLE;
+    }
+    
+    return FailureReason.UNKNOWN_ERROR;
   }
 }

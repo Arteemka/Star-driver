@@ -2,12 +2,13 @@ import { Injectable } from '@nestjs/common';
 import { Telegram } from 'telegraf';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
-import { MIN_STARS, START_CAPTION, STAR_PRICE_RUB, STAR_PRICE_USD, Currency } from '../common/constants/star.constants';
+//Currency
+import { MIN_STARS, START_CAPTION, STAR_PRICE_RUB, STAR_PRICE_USD } from '../common/constants/star.constants';
 import {
   CallbackData,
   PaymentMethod,
 } from '../common/constants/payment.constants';
-import { WataService } from '../payments/wata.service';
+//import { WataService } from '../payments/wata.service';
 import { PayID19Service } from '../payments/payid19.service';
 import { FragmentService } from '../payments/fragment.service';
 import { KassaService } from '../payments/kassa.service';
@@ -50,7 +51,7 @@ export class BotService {
 
   constructor(
     private readonly config: ConfigService,
-    private readonly wataService: WataService,
+    //private readonly wataService: WataService,
     private readonly payid19Service: PayID19Service,
     private readonly kassaService: KassaService,
     private readonly fragmentService: FragmentService,
@@ -300,6 +301,52 @@ export class BotService {
         recipientUsername = userInfo.username;
       }
 
+      // ПРОВЕРКА СУЩЕСТВОВАНИЯ ПОЛУЧАТЕЛЯ В FRAGMENT
+      this.logger.log(`🔍 Starting Fragment validation for recipient @${recipientUsername} (order: ${orderId})`);
+      try {
+        const fragmentUserInfo = await this.fragmentService.getUserInfo(recipientUsername);
+        
+        this.logger.log(`🔍 Fragment validation response for @${recipientUsername}: ok=${fragmentUserInfo.ok}, status=${fragmentUserInfo.status}`);
+        
+        if (!fragmentUserInfo.ok) {
+          this.logger.error(`❌ User @${recipientUsername} not found in Fragment! Status: ${fragmentUserInfo.status}, Error: ${fragmentUserInfo.error}`);
+          
+          const errorMessage = `Пользователь @${recipientUsername} не найден в Fragment!\n\n` +
+            `Это означает, что ${isGift ? 'получатель подарка' : 'вы'} должен первым зарегистрироваться на Fragment.\n\n` +
+            `🔗 Перейти на Fragment: https://fragment.com`;
+          
+          await this.tg.sendMessage(chatId, errorMessage, {
+            parse_mode: 'Markdown',
+            reply_markup: this.mainKeyboard.reply_markup
+          });
+          
+          this.logger.warn(`⛔ Order ${orderId} cancelled: User @${recipientUsername} not found in Fragment`);
+          return; // Прекращаем создание заказа
+        }
+        
+        this.logger.log(`✅ User @${recipientUsername} validated successfully in Fragment (order: ${orderId})`);
+        if (fragmentUserInfo.data) {
+          this.logger.log(`📋 Fragment user data for @${recipientUsername}: ID=${fragmentUserInfo.data.id}, Premium=${fragmentUserInfo.data.premium || false}`);
+        }
+      } catch (fragmentValidationError) {
+        this.logger.error(`⚠️ Fragment user validation failed for @${recipientUsername} (order: ${orderId}):`, fragmentValidationError);
+        
+        // В случае ошибки проверки продолжаем создание заказа
+        // но предупреждаем пользователя
+        const warningMessage = `⚠️ **Предупреждение**\n\n` +
+          `Не удалось проверить существование @${recipientUsername} в Fragment.\n` +
+          `Если ${isGift ? 'получатель' : 'вы'} не зарегистрированы на Fragment, платеж будет возвращен.\n\n` +
+          `🔗 Зарегистрироваться на Fragment: https://fragment.com\n\n` +
+          `Продолжаем создание заказа...`;
+        
+        this.logger.warn(`🚀 Proceeding with order ${orderId} creation despite validation failure for @${recipientUsername}`);
+        
+        await this.tg.sendMessage(chatId, warningMessage, {
+          parse_mode: 'Markdown',
+          reply_markup: this.mainKeyboard.reply_markup
+        });
+      }
+
       // Сохраняем пользователя при создании заказа (исключая администратора)
       try {
         const adminId = this.config.get<string>('ADMIN_ID');
@@ -350,8 +397,9 @@ export class BotService {
       const enhancedDescription = `${description} | recipient:${recipientUsername}`;
       
       try {
-        // Используем тот же orderId для всех платежных систем        
-        const [cryptoInvoiceUrl, cardPaymentLink, kassaPayment] = await Promise.all([
+        // Используем тот же orderId для всех платежных систем  
+        // cardPaymentLink,      
+        const [cryptoInvoiceUrl, kassaPayment] = await Promise.all([
           this.payid19Service.createInvoice(
             cryptoAmount,
             'USD',
@@ -359,12 +407,12 @@ export class BotService {
             orderId,
             undefined
           ),
-          this.wataService.createPaymentLink(
-            cardAmount,
-            Currency.RUB,
-            description,
-            orderId
-          ),
+          // this.wataService.createPaymentLink(
+          //   cardAmount,
+          //   Currency.RUB,
+          //   description,
+          //   orderId
+          // ),
           this.kassaService.createPayment(
             cardAmount,
             orderId,
@@ -388,20 +436,20 @@ export class BotService {
           giftRecipient: giftUsername
         });
 
-        await this.transactionLogger.logPaymentCreated({
-          transactionId: orderId + '_wata',
-          orderId,
-          amount: cardAmount,
-          currency: 'RUB',
-          paymentMethod: 'WATA',
-          paymentUrl: cardPaymentLink.url,
-          userId: chatId,
-          username: recipientUsername,
-          chatId,
-          starCount: count,
-          isGift,
-          giftRecipient: giftUsername
-        });
+        // await this.transactionLogger.logPaymentCreated({
+        //   transactionId: orderId + '_wata',
+        //   orderId,
+        //   amount: cardAmount,
+        //   currency: 'RUB',
+        //   paymentMethod: 'WATA',
+        //   paymentUrl: cardPaymentLink.url,
+        //   userId: chatId,
+        //   username: recipientUsername,
+        //   chatId,
+        //   starCount: count,
+        //   isGift,
+        //   giftRecipient: giftUsername
+        // });
 
         await this.transactionLogger.logPaymentCreated({
           transactionId: orderId + '_p2pkassa',
@@ -439,10 +487,10 @@ export class BotService {
             text: `💰 Криптовалюта (${Number(cryptoAmount.toFixed(2))} USD)`,
             url: cryptoInvoiceUrl
           }],
-          [{
-            text: `💳 Карта/СБП WATA (${cardAmount} RUB)`,
-            url: cardPaymentLink.url || '#'
-          }],
+          // [{
+          //   text: `💳 Карта/СБП WATA (${cardAmount} RUB)`,
+          //   url: cardPaymentLink.url || '#'
+          // }],
           [{
             text: `💳 Карта/СБП Kassa (${cardAmount} RUB)`,
             url: kassaPayment.link || '#'
@@ -581,52 +629,52 @@ export class BotService {
         }
         break;
       }
-      case PaymentMethod.SBP: {
-        try {
-          // Создаем платежную ссылку через WATA API
-          const amount = count * STAR_PRICE_RUB; // Стоимость звёзд в рублях
-          const paymentLink = await this.wataService.createPaymentLink(
-            amount,
-            Currency.RUB,
-            description,
-            orderId
-          );
+      // case PaymentMethod.SBP: {
+      //   try {
+      //     // Создаем платежную ссылку через WATA API
+      //     const amount = count * STAR_PRICE_RUB; // Стоимость звёзд в рублях
+      //     const paymentLink = await this.wataService.createPaymentLink(
+      //       amount,
+      //       Currency.RUB,
+      //       description,
+      //       orderId
+      //     );
           
-          if (paymentLink.url) {
-            const message = `💳 Оплата картой/СБП\n\n` +
-              `🚀 Ссылка для оплаты:\n${paymentLink.url}\n\n` +
-              `📋 Детали заказа:\n` +
-              `• Заказ: ${orderId}\n` +
-              `• Сумма: ${amount} ${paymentLink.currency}\n` +
-              `• Звёзд: ${count}\n\n` +
-              `⏰ Срок оплаты: до завершения сессии\n` +
-              `🔒 Безопасный платеж через WATA`;
+      //     if (paymentLink.url) {
+      //       const message = `💳 Оплата картой/СБП\n\n` +
+      //         `🚀 Ссылка для оплаты:\n${paymentLink.url}\n\n` +
+      //         `📋 Детали заказа:\n` +
+      //         `• Заказ: ${orderId}\n` +
+      //         `• Сумма: ${amount} ${paymentLink.currency}\n` +
+      //         `• Звёзд: ${count}\n\n` +
+      //         `⏰ Срок оплаты: до завершения сессии\n` +
+      //         `🔒 Безопасный платеж через WATA`;
             
-            await this.tg.sendMessage(chatId, message, {
-              reply_markup: this.mainKeyboard.reply_markup
-            });
+      //       await this.tg.sendMessage(chatId, message, {
+      //         reply_markup: this.mainKeyboard.reply_markup
+      //       });
             
-            this.logger.log(`Payment link created for order ${orderId}: ${paymentLink.url}`);
-          } else {
-            await this.tg.sendMessage(
-              chatId,
-              '❗ Не удалось создать ссылку на оплату. Попробуйте позже.',
-              { reply_markup: this.mainKeyboard.reply_markup }
-            );
-            this.session.delete(chatId);
-          }
-        } catch (error) {
-          this.logger.error('Payment creation failed', error);
-          await this.tg.sendMessage(
-            chatId,
-            '❗ Произошла ошибка при создании платежа. Попробуйте позже.',
-            { reply_markup: this.mainKeyboard.reply_markup }
-          );
-          this.session.delete(chatId);
-          return;
-        }
-        break;
-      }
+      //       this.logger.log(`Payment link created for order ${orderId}: ${paymentLink.url}`);
+      //     } else {
+      //       await this.tg.sendMessage(
+      //         chatId,
+      //         '❗ Не удалось создать ссылку на оплату. Попробуйте позже.',
+      //         { reply_markup: this.mainKeyboard.reply_markup }
+      //       );
+      //       this.session.delete(chatId);
+      //     }
+      //   } catch (error) {
+      //     this.logger.error('Payment creation failed', error);
+      //     await this.tg.sendMessage(
+      //       chatId,
+      //       '❗ Произошла ошибка при создании платежа. Попробуйте позже.',
+      //       { reply_markup: this.mainKeyboard.reply_markup }
+      //     );
+      //     this.session.delete(chatId);
+      //     return;
+      //   }
+      //   break;
+      // }
       default:
         await this.tg.sendMessage(chatId, '❗ Выберите способ оплаты из меню.', {
           reply_markup: this.mainKeyboard.reply_markup

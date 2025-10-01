@@ -30,6 +30,20 @@ export interface WalletBalanceResponse {
   address: string;
 }
 
+// Ответ информации о пользователе Fragment API
+export interface UserInfoResponse {
+  ok: boolean;
+  status: number;
+  data?: {
+    id: string;
+    username: string;
+    first_name?: string;
+    last_name?: string;
+    premium?: boolean;
+  };
+  error?: string;
+}
+
 @Injectable()
 export class FragmentService {
   private readonly logger = AppLogger;
@@ -236,6 +250,89 @@ export class FragmentService {
         throw new BadGatewayException(
           `Неизвестная ошибка Fragment API: ${err.message}`
         );
+      }
+    }
+  }
+
+  /**
+   * Получает информацию о пользователе Fragment
+   * @param username Telegram username без '@'
+   * @returns Информация о пользователе или ошибка
+   */
+  async getUserInfo(username: string): Promise<UserInfoResponse> {
+    if (!this.jwtToken) {
+      await this.authenticate();
+    }
+
+    const url = `${this.baseUrl}/misc/user/${username}/`;
+    this.logger.log(`Getting user info for @${username} from Fragment API`);
+
+    try {
+      this.logger.log(`Making request to Fragment API: ${url}`);
+      this.logger.log(`JWT token length: ${this.jwtToken?.length || 'null'}`);
+      
+      const response = await firstValueFrom(
+        this.http.get(url, {
+          headers: {
+            Authorization: `JWT ${this.jwtToken}`,
+            Accept: 'application/json',
+          },
+          timeout: 30000, // 30 секунд для проверки пользователя
+        }),
+      );
+      
+      this.logger.log(`User info retrieved for @${username}: found`);
+      
+      return {
+        ok: true,
+        status: response.status,
+        data: response.data,
+      };
+    } catch (err: any) {
+      this.logger.error(`Fragment user info request failed for @${username}:`, {
+        message: err.message,
+        status: err.response?.status,
+        statusText: err.response?.statusText,
+        data: err.response?.data,
+        config: {
+          url: err.config?.url,
+          method: err.config?.method,
+        }
+      });
+      
+      // Возвращаем структурированный ответ об ошибке
+      if (err.response) {
+        const status = err.response.status;
+        const data = err.response.data;
+        
+        this.logger.warn(`User @${username} validation failed with status ${status}: ${data?.error || err.response.statusText}`);
+        
+        return {
+          ok: false,
+          status,
+          error: data?.error || err.response.statusText || 'Unknown error',
+        };
+      } else if (err.code === 'ECONNABORTED') {
+        this.logger.warn(`User @${username} validation timed out`);
+        return {
+          ok: false,
+          status: 408,
+          error: 'Request timeout',
+        };
+      } else if (err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED') {
+        this.logger.warn(`User @${username} validation failed - service unavailable`);
+        return {
+          ok: false,
+          status: 503,
+          error: 'Service unavailable',
+        };
+      } else {
+        this.logger.error(`User @${username} validation failed with unknown error: ${err.message}`);
+        return {
+          ok: false,
+          status: 500,
+          error: err.message || 'Unknown error',
+        };
       }
     }
   }

@@ -1,10 +1,11 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import * as Joi from 'joi';
 import { HttpModule } from '@nestjs/axios';
 import { BotModule } from './bot/bot.module';
-import { WataWebhookController } from './payments/wata-webhook.controller';
-import { WataWebhookService } from './payments/wata-webhook.service';
+//import { WataWebhookController } from './payments/wata-webhook.controller';
+//import { WataWebhookService } from './payments/wata-webhook.service';
 import { WataSignatureService } from './payments/wata-signature.service';
 import { FragmentService } from './payments/fragment.service';
 import { PayID19Service } from './payments/payid19.service';
@@ -19,6 +20,8 @@ import { RootWebhookController } from './root-webhook.controller';
 import { TransactionLoggerService } from './common/services/transaction-logger.service';
 import { UserStorageService } from './common/services/user-storage.service';
 import { TransactionStatsController } from './common/controllers/transaction-stats.controller';
+import { RetryQueueService } from './payments/retry-queue.service';
+import { RetrySchedulerService } from './payments/retry-scheduler.service';
 
 @Module({
   imports: [
@@ -32,8 +35,8 @@ import { TransactionStatsController } from './common/controllers/transaction-sta
         KASSA_API_KEY: Joi.string().required(),
         KASSA_PROJECT_ID: Joi.string().required(),
         KASSA_API_URL: Joi.string().uri().optional(),
-        WATA_ACCESS_TOKEN: Joi.string().required(),
-        WATA_API_URL: Joi.string().uri(),
+       // WATA_ACCESS_TOKEN: Joi.string().required(),
+      //  WATA_API_URL: Joi.string().uri(),
         PAYID19_PUBLIC_KEY: Joi.string().required(),
         PAYID19_PRIVATE_KEY: Joi.string().required(),
         
@@ -44,13 +47,16 @@ import { TransactionStatsController } from './common/controllers/transaction-sta
         WEBHOOK_BASE_URL: Joi.string().uri().optional(),
       }),
     }),
+    ScheduleModule.forRoot(),
     HttpModule,
     BotModule,
     
   ],
-  controllers: [WataWebhookController, PayID19WebhookController, KassaWebhookController, RootWebhookController, TransactionStatsController],
+  //WataWebhookController, 
+  controllers: [ PayID19WebhookController, KassaWebhookController, RootWebhookController, TransactionStatsController],
+  //WataWebhookService
   providers: [
-    WataWebhookService, 
+    
     WataSignatureService, 
     FragmentService, 
     PayID19Service, 
@@ -59,7 +65,9 @@ import { TransactionStatsController } from './common/controllers/transaction-sta
     KassaWebhookService,
     KassaSignatureService,
     TransactionLoggerService,
-    UserStorageService
+    UserStorageService,
+    RetryQueueService,
+    RetrySchedulerService,
   ],
 })
 export class AppModule {}
